@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: xi-monitor-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: xi_monitor
+      POSTGRES_USER: xi_monitor
+      POSTGRES_PASSWORD: change-me-db-password
+    ports:
+      - "5432:5432"
+    volumes:
+      - xi-monitor-postgres-dev-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xi_monitor -d xi_monitor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  xi-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: xi-monitor:dev
+    container_name: xi-monitor-dev
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      MID_SERVER_ADDR: ":8080"
+      MID_SESSION_SECRET: "change-me-session-secret"
+      MID_ENCRYPTION_KEY: "change-me-32-byte-encryption-key"
+      MID_ADMIN_USERNAME: "admin"
+      MID_ADMIN_PASSWORD_HASH: "$$2a$$10$$hVl1d/EjxPSOCqXp.QqbGeNhPw3Fz5GGjFyqnJdWrEOPPqrWr.ncW"
+      MID_DATABASE_DSN: "postgres://xi_monitor:change-me-db-password@postgres:5432/xi_monitor?sslmode=disable"
+      MID_POLLER_INTERVAL_SECONDS: "1800"
+
+volumes:
+  xi-monitor-postgres-dev-data:
