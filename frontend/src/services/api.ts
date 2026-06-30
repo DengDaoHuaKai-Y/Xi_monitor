@@ -72,6 +72,8 @@ export type UpstreamPayload = {
   balance_user_id?: string;
   balance_access_token?: string;
   balance_refresh_token?: string;
+  balance_cookie?: string;
+  balance_user_agent?: string;
   auth_secret?: string;
   auth_username?: string;
   auth_password?: string;

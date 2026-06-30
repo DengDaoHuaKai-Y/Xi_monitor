@@ -28,6 +28,8 @@ type BalanceCredentials struct {
 	BalanceAccessToken    string     `json:"balance_access_token,omitempty"`
 	BalanceRefreshToken   string     `json:"balance_refresh_token,omitempty"`
 	BalanceTokenExpiresAt *time.Time `json:"balance_token_expires_at,omitempty"`
+	BalanceCookie         string     `json:"balance_cookie,omitempty"`
+	BalanceUserAgent      string     `json:"balance_user_agent,omitempty"`
 	AuthUsername          string     `json:"auth_username,omitempty"`
 	AuthPassword          string     `json:"auth_password,omitempty"`
 	CallURL               string     `json:"call_url,omitempty"`
@@ -167,7 +169,7 @@ func CallTestOptionsFromGroup(group *store.UpstreamGroup) CallTestOptions {
 	}
 }
 
-func RequestJSON(ctx context.Context, client *http.Client, u store.Upstream, secret, method, path string, query url.Values, body any) (any, int, time.Duration, error) {
+func RequestJSON(ctx context.Context, client *http.Client, u store.Upstream, secret, method, path string, query url.Values, body any, extraHeaders ...map[string]string) (any, int, time.Duration, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -193,6 +195,13 @@ func RequestJSON(ctx context.Context, client *http.Client, u store.Upstream, sec
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for _, headers := range extraHeaders {
+		for key, value := range headers {
+			if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+				req.Header.Set(key, strings.TrimSpace(value))
+			}
+		}
 	}
 	ApplyAuth(req, u.AuthType, secret)
 
@@ -621,6 +630,8 @@ func DecodeBalanceCredentials(secret string) (BalanceCredentials, error) {
 	creds.BalanceUserID = strings.TrimSpace(creds.BalanceUserID)
 	creds.BalanceAccessToken = strings.TrimSpace(creds.BalanceAccessToken)
 	creds.BalanceRefreshToken = strings.TrimSpace(creds.BalanceRefreshToken)
+	creds.BalanceCookie = strings.TrimSpace(creds.BalanceCookie)
+	creds.BalanceUserAgent = strings.TrimSpace(creds.BalanceUserAgent)
 	creds.AuthUsername = strings.TrimSpace(creds.AuthUsername)
 	creds.CallURL = strings.TrimRight(strings.TrimSpace(creds.CallURL), "/")
 	creds.CallKey = strings.TrimSpace(creds.CallKey)
@@ -633,8 +644,8 @@ func DecodeBalanceCredentials(secret string) (BalanceCredentials, error) {
 			return BalanceCredentials{}, fmt.Errorf("balance_access_token and balance_user_id are required")
 		}
 	case BalanceAuthSub2APIRefreshToken:
-		if creds.BalanceRefreshToken == "" {
-			return BalanceCredentials{}, fmt.Errorf("balance_refresh_token is required")
+		if creds.BalanceRefreshToken == "" && creds.BalanceAccessToken == "" {
+			return BalanceCredentials{}, fmt.Errorf("balance_refresh_token or balance_access_token is required")
 		}
 	case BalanceAuthPassword:
 		if creds.AuthUsername == "" || creds.AuthPassword == "" {
@@ -651,6 +662,8 @@ func EncodeBalanceCredentials(creds BalanceCredentials) (string, error) {
 	creds.BalanceUserID = strings.TrimSpace(creds.BalanceUserID)
 	creds.BalanceAccessToken = strings.TrimSpace(creds.BalanceAccessToken)
 	creds.BalanceRefreshToken = strings.TrimSpace(creds.BalanceRefreshToken)
+	creds.BalanceCookie = strings.TrimSpace(creds.BalanceCookie)
+	creds.BalanceUserAgent = strings.TrimSpace(creds.BalanceUserAgent)
 	creds.AuthUsername = strings.TrimSpace(creds.AuthUsername)
 	creds.CallURL = strings.TrimRight(strings.TrimSpace(creds.CallURL), "/")
 	creds.CallKey = strings.TrimSpace(creds.CallKey)
@@ -674,8 +687,8 @@ func validateBalanceCredentials(creds BalanceCredentials) (BalanceCredentials, e
 			return BalanceCredentials{}, fmt.Errorf("balance_access_token and balance_user_id are required")
 		}
 	case BalanceAuthSub2APIRefreshToken:
-		if creds.BalanceRefreshToken == "" {
-			return BalanceCredentials{}, fmt.Errorf("balance_refresh_token is required")
+		if creds.BalanceRefreshToken == "" && creds.BalanceAccessToken == "" {
+			return BalanceCredentials{}, fmt.Errorf("balance_refresh_token or balance_access_token is required")
 		}
 	case BalanceAuthPassword:
 		if creds.AuthUsername == "" || creds.AuthPassword == "" {
@@ -701,6 +714,9 @@ func MaskBalanceCredentials(secret string) string {
 			parts = append(parts, "access:"+crypto.MaskSecret(creds.BalanceAccessToken))
 		}
 		parts = append(parts, "refresh:"+crypto.MaskSecret(creds.BalanceRefreshToken))
+		if creds.BalanceCookie != "" {
+			parts = append(parts, "cookie:"+crypto.MaskSecret(creds.BalanceCookie))
+		}
 	case BalanceAuthPassword:
 		parts = append(parts, strings.TrimSpace(creds.AuthUsername))
 	}

@@ -561,6 +561,8 @@ func credentialSecret(req upstreamRequest, required bool) (string, string, error
 			BalanceAccessToken:    req.BalanceAccessToken,
 			BalanceRefreshToken:   req.BalanceRefreshToken,
 			BalanceTokenExpiresAt: req.BalanceTokenExpiresAt,
+			BalanceCookie:         req.BalanceCookie,
+			BalanceUserAgent:      req.BalanceUserAgent,
 			CallURL:               callURL,
 			CallKey:               callKey,
 		})
@@ -773,6 +775,8 @@ type upstreamRequest struct {
 	BalanceAccessToken    string          `json:"balance_access_token"`
 	BalanceRefreshToken   string          `json:"balance_refresh_token"`
 	BalanceTokenExpiresAt *time.Time      `json:"balance_token_expires_at"`
+	BalanceCookie         string          `json:"balance_cookie"`
+	BalanceUserAgent      string          `json:"balance_user_agent"`
 	AuthType              string          `json:"auth_type"`
 	AuthSecret            string          `json:"auth_secret"`
 	AuthUsername          string          `json:"auth_username"`

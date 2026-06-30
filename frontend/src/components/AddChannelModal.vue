@@ -30,6 +30,8 @@ const form = reactive({
   balance_access_token: '',
   balance_refresh_token: '',
   balance_cached_access_token: '',
+  balance_cookie: '',
+  balance_user_agent: '',
   auth_username: '',
   auth_password: '',
   api_key: '',
@@ -55,7 +57,7 @@ const balanceCredentialTouched = computed(() => {
     case 'newapi_access_token':
       return Boolean(form.balance_user_id.trim() || form.balance_access_token.trim());
     case 'sub2api_refresh_token':
-      return Boolean(form.balance_refresh_token.trim() || form.balance_cached_access_token.trim());
+      return Boolean(form.balance_refresh_token.trim() || form.balance_cached_access_token.trim() || form.balance_cookie.trim() || form.balance_user_agent.trim());
     case 'password':
       return Boolean(form.auth_username.trim() || form.auth_password);
     case 'x_api_key':
@@ -93,7 +95,7 @@ const validationMessage = computed(() => {
     }
   }
   if (form.balance_auth_type === 'sub2api_refresh_token') {
-    if (!form.balance_refresh_token.trim()) return 'sub2api refresh_token 模式必须填写 refresh_token';
+    if (!form.balance_refresh_token.trim() && !form.balance_cached_access_token.trim()) return 'sub2api 模式必须填写 refresh_token 或 auth_token';
   }
   if (form.balance_auth_type === 'password') {
     if (!form.auth_username.trim() || !form.auth_password) return '账号密码兼容模式必须填写登录账号和登录密码';
@@ -216,8 +218,10 @@ function buildPayload(): UpstreamPayload {
     base.balance_access_token = form.balance_access_token.trim();
   } else if (form.balance_auth_type === 'sub2api_refresh_token') {
     base.balance_auth_type = 'sub2api_refresh_token';
-    base.balance_refresh_token = form.balance_refresh_token.trim();
+    if (form.balance_refresh_token.trim()) base.balance_refresh_token = form.balance_refresh_token.trim();
     if (form.balance_cached_access_token.trim()) base.balance_access_token = form.balance_cached_access_token.trim();
+    if (form.balance_cookie.trim()) base.balance_cookie = form.balance_cookie.trim();
+    if (form.balance_user_agent.trim()) base.balance_user_agent = form.balance_user_agent.trim();
   } else if (form.balance_auth_type === 'password') {
     base.balance_auth_type = 'password';
     base.auth_username = form.auth_username.trim();
@@ -295,9 +299,6 @@ async function submit() {
       <section class="form-section">
         <div class="section-title">
           <span>余额查询凭证</span>
-          <button class="text-button" type="button" @click="showAdvancedOptions = !showAdvancedOptions">
-            {{ showAdvancedOptions ? '隐藏高级' : '高级模式' }}
-          </button>
         </div>
 
         <div class="form-grid">
@@ -348,28 +349,45 @@ async function submit() {
               <input
                 v-model="form.balance_refresh_token"
                 type="password"
-                :placeholder="isEditing ? '留空则不修改凭证' : '从 sub2api Local Storage 复制 refresh_token'"
+                :placeholder="isEditing ? '留空则不修改凭证' : '可填 refresh_token；被 Cloudflare 拦时可只填 auth_token + Cookie'"
                 autocomplete="new-password"
               />
             </label>
             <label class="wide">
-              <span>access_token，可选</span>
+              <span>access_token / auth_token，可选</span>
               <input
                 v-model="form.balance_cached_access_token"
                 type="password"
-                :placeholder="isEditing ? '留空则不修改凭证' : '可留空，后端会通过 refresh_token 换取'"
+                :placeholder="isEditing ? '留空则不修改凭证' : '如果 refresh 被 Cloudflare 拦截，请填写 auth_token'"
                 autocomplete="new-password"
               />
             </label>
+            <label class="wide">
+              <span>Cookie，可选</span>
+              <textarea
+                v-model="form.balance_cookie"
+                :placeholder="isEditing ? '留空则不修改凭证' : '从浏览器 Network 请求头复制 Cookie，包含 cf_clearance 时最有用'"
+                autocomplete="off"
+                rows="3"
+              ></textarea>
+            </label>
+            <label class="wide">
+              <span>User-Agent，可选</span>
+              <input
+                v-model="form.balance_user_agent"
+                :placeholder="isEditing ? '留空则不修改凭证' : '从同一个 Network 请求头复制 User-Agent'"
+                autocomplete="off"
+              />
+            </label>
             <details class="help-panel wide">
-              <summary>如何获取 sub2api refresh_token</summary>
+              <summary>如何获取 sub2api 余额凭证</summary>
               <ol>
                 <li>登录 sub2api 后台。</li>
-                <li>打开 F12 -> Application -> Local Storage -> 对应域名。</li>
-                <li>复制 refresh_token。</li>
-                <li>后端会自动续期，不需要每天抓 auth_token。</li>
+                <li>打开 F12 -> Application -> Local Storage，复制 auth_token 到 access_token。</li>
+                <li>打开 F12 -> Network，点一个 /api/v1/auth/me 或 /api/v1/user/profile 请求。</li>
+                <li>复制 Request Headers 里的 Cookie 和 User-Agent 到上面对应字段。</li>
               </ol>
-              <p>sub2api 的 refresh_token 默认约 30 天，后端会自动续期并保存新的 refresh_token。</p>
+              <p>Cloudflare 通常需要 cf_clearance Cookie；过期后需要重新从浏览器复制新的 Cookie。</p>
             </details>
           </template>
 

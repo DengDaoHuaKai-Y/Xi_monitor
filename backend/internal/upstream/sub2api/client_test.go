@@ -180,6 +180,115 @@ func TestFetchSub2APIRefreshTokenRefreshesAndSavesToken(t *testing.T) {
 	}
 }
 
+func TestFetchSub2APIRefreshTokenUsesValidCachedAccessToken(t *testing.T) {
+	refreshCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshCalled = true
+			http.Error(w, "refresh should not be called", http.StatusTeapot)
+		case "/api/v1/auth/me":
+			if got := r.Header.Get("Authorization"); got != "Bearer cached-access-token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			if got := r.Header.Get("Cookie"); got != "cf_clearance=ok; session=abc" {
+				t.Fatalf("Cookie = %q", got)
+			}
+			if got := r.Header.Get("User-Agent"); got != "Mozilla/5.0 Test" {
+				t.Fatalf("User-Agent = %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"id":             77,
+					"email":          "user@example.com",
+					"balance":        15.25,
+					"allowed_groups": []any{"default"},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	expiresAt := time.Now().Add(time.Hour)
+	secret, err := upstream.EncodeBalanceCredentials(upstream.BalanceCredentials{
+		BalanceAuthType:       upstream.BalanceAuthSub2APIRefreshToken,
+		BalanceAccessToken:    "cached-access-token",
+		BalanceRefreshToken:   "refresh-token",
+		BalanceTokenExpiresAt: &expiresAt,
+		BalanceCookie:         "cf_clearance=ok; session=abc",
+		BalanceUserAgent:      "Mozilla/5.0 Test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := New(server.Client()).Fetch(context.Background(), store.Upstream{
+		ID:       11,
+		Kind:     store.KindSub2API,
+		BaseURL:  server.URL,
+		AuthType: store.AuthSub2Refresh,
+	}, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshCalled {
+		t.Fatal("refresh endpoint was called")
+	}
+	if result.UpdatedSecret != "" {
+		t.Fatalf("UpdatedSecret = %q", result.UpdatedSecret)
+	}
+	item := result.Items[0]
+	if item.Balance == nil || *item.Balance != 15.25 {
+		t.Fatalf("balance = %#v", item.Balance)
+	}
+}
+
+func TestFetchSub2APIAllowsCachedAccessTokenWithoutRefreshToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/me":
+			if got := r.Header.Get("Authorization"); got != "Bearer cached-access-token" {
+				t.Fatalf("Authorization = %q", got)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"id":      77,
+					"balance": 15.25,
+				},
+			})
+		case "/api/v1/auth/refresh":
+			t.Fatal("refresh endpoint should not be called")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	secret, err := upstream.EncodeBalanceCredentials(upstream.BalanceCredentials{
+		BalanceAuthType:    upstream.BalanceAuthSub2APIRefreshToken,
+		BalanceAccessToken: "cached-access-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := New(server.Client()).Fetch(context.Background(), store.Upstream{
+		ID:       11,
+		Kind:     store.KindSub2API,
+		BaseURL:  server.URL,
+		AuthType: store.AuthSub2Refresh,
+	}, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := result.Items[0]
+	if item.Balance == nil || *item.Balance != 15.25 {
+		t.Fatalf("balance = %#v", item.Balance)
+	}
+}
+
 func TestFetchSub2APIRefreshTokenExpiredReturnsCredentialInvalid(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

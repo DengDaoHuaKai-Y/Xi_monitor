@@ -19,6 +19,8 @@ type Client struct {
 	HTTP *http.Client
 }
 
+const sub2APIAccessTokenRefreshSkew = 2 * time.Minute
+
 func New(httpClient *http.Client) *Client {
 	return &Client{HTTP: httpClient}
 }
@@ -216,8 +218,29 @@ func (c *Client) fetchUserProfile(ctx context.Context, u store.Upstream, secret 
 }
 
 func (c *Client) fetchWithRefreshToken(ctx context.Context, u store.Upstream, secret string, creds upstream.BalanceCredentials, now time.Time) (upstream.FetchResult, error) {
+	var cachedErr error
+	if canUseCachedAccessToken(creds, now) {
+		result, err := c.fetchWithAccessToken(ctx, u, secret, creds, now)
+		if err == nil {
+			return result, nil
+		}
+		cachedErr = err
+	}
+	if strings.TrimSpace(creds.BalanceRefreshToken) == "" {
+		if cachedErr != nil {
+			if result, ok := c.fetchCallOnly(ctx, u, secret, now, fmt.Errorf("balance credential invalid: %w", cachedErr)); ok {
+				return result, nil
+			}
+			return upstream.FetchResult{}, fmt.Errorf("balance credential invalid: %w", cachedErr)
+		}
+		return upstream.FetchResult{}, fmt.Errorf("balance credential invalid: balance_refresh_token or usable balance_access_token is required")
+	}
+
 	updated, err := c.refreshAccessToken(ctx, u, creds)
 	if err != nil {
+		if cachedErr != nil {
+			err = fmt.Errorf("%w; cached access token failed: %v", err, cachedErr)
+		}
 		if result, ok := c.fetchCallOnly(ctx, u, secret, now, fmt.Errorf("balance credential invalid: %w", err)); ok {
 			return result, nil
 		}
@@ -227,24 +250,34 @@ func (c *Client) fetchWithRefreshToken(ctx context.Context, u store.Upstream, se
 	if err != nil {
 		return upstream.FetchResult{}, err
 	}
+
+	result, err := c.fetchWithAccessToken(ctx, u, updatedSecret, updated, now)
+	if err != nil {
+		return upstream.FetchResult{}, err
+	}
+	result.UpdatedSecret = updatedSecret
+	result.UpdatedMasked = upstream.MaskBalanceCredentials(updatedSecret)
+	return result, nil
+}
+
+func (c *Client) fetchWithAccessToken(ctx context.Context, u store.Upstream, secret string, creds upstream.BalanceCredentials, now time.Time) (upstream.FetchResult, error) {
 	runtime := u
 	runtime.AuthType = store.AuthBearer
-	runtimeSecret, err := upstream.EncodeBearerCredentials(updated.BalanceAccessToken, updated.CallURL, updated.CallKey)
+	runtimeSecret, err := upstream.EncodeBearerCredentials(creds.BalanceAccessToken, creds.CallURL, creds.CallKey)
 	if err != nil {
 		return upstream.FetchResult{}, err
 	}
 
-	resp, _, latency, err := upstream.RequestJSON(ctx, c.HTTP, runtime, runtimeSecret, http.MethodGet, "/api/v1/auth/me", nil, nil)
+	headers := balanceBrowserHeaders(creds)
+	resp, _, latency, err := upstream.RequestJSON(ctx, c.HTTP, runtime, runtimeSecret, http.MethodGet, "/api/v1/auth/me", nil, nil, headers)
 	path := "/api/v1/auth/me"
 	profile := asMap(resp)
 	balance := balanceFromUsage(profile)
 	if err != nil || balance == nil {
-		resp, _, latency, err = upstream.RequestJSON(ctx, c.HTTP, runtime, runtimeSecret, http.MethodGet, "/api/v1/user/profile", nil, nil)
+		resp, _, latency, err = upstream.RequestJSON(ctx, c.HTTP, runtime, runtimeSecret, http.MethodGet, "/api/v1/user/profile", nil, nil, headers)
 		path = "/api/v1/user/profile"
 		if err != nil {
-			if result, ok := c.fetchCallOnly(ctx, u, updatedSecret, now, fmt.Errorf("user balance failed: %w", err)); ok {
-				result.UpdatedSecret = updatedSecret
-				result.UpdatedMasked = upstream.MaskBalanceCredentials(updatedSecret)
+			if result, ok := c.fetchCallOnly(ctx, u, secret, now, fmt.Errorf("user balance failed: %w", err)); ok {
 				return result, nil
 			}
 			return upstream.FetchResult{}, fmt.Errorf("user balance failed: %w", err)
@@ -253,18 +286,23 @@ func (c *Client) fetchWithRefreshToken(ctx context.Context, u store.Upstream, se
 		balance = balanceFromUsage(profile)
 	}
 	if balance == nil {
-		if result, ok := c.fetchCallOnly(ctx, u, updatedSecret, now, fmt.Errorf("未找到额度字段")); ok {
-			result.UpdatedSecret = updatedSecret
-			result.UpdatedMasked = upstream.MaskBalanceCredentials(updatedSecret)
+		if result, ok := c.fetchCallOnly(ctx, u, secret, now, fmt.Errorf("未找到额度字段")); ok {
 			return result, nil
 		}
 		return upstream.FetchResult{}, fmt.Errorf("未找到额度字段")
 	}
 
-	result := c.userProfileResult(ctx, u, updatedSecret, now, profile, balance, latency, path, "")
-	result.UpdatedSecret = updatedSecret
-	result.UpdatedMasked = upstream.MaskBalanceCredentials(updatedSecret)
-	return result, nil
+	return c.userProfileResult(ctx, u, secret, now, profile, balance, latency, path, ""), nil
+}
+
+func canUseCachedAccessToken(creds upstream.BalanceCredentials, now time.Time) bool {
+	if strings.TrimSpace(creds.BalanceAccessToken) == "" {
+		return false
+	}
+	if creds.BalanceTokenExpiresAt == nil {
+		return true
+	}
+	return creds.BalanceTokenExpiresAt.After(now.Add(sub2APIAccessTokenRefreshSkew))
 }
 
 func (c *Client) refreshAccessToken(ctx context.Context, u store.Upstream, creds upstream.BalanceCredentials) (upstream.BalanceCredentials, error) {
@@ -281,6 +319,7 @@ func (c *Client) refreshAccessToken(ctx context.Context, u store.Upstream, creds
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
+	applyBrowserHeaders(req, balanceBrowserHeaders(creds))
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return upstream.BalanceCredentials{}, err
@@ -327,6 +366,27 @@ func (c *Client) refreshAccessToken(ctx context.Context, u store.Upstream, creds
 	creds.BalanceRefreshToken = refreshToken
 	creds.BalanceTokenExpiresAt = &expiresAt
 	return creds, nil
+}
+
+func balanceBrowserHeaders(creds upstream.BalanceCredentials) map[string]string {
+	headers := map[string]string{}
+	if strings.TrimSpace(creds.BalanceCookie) != "" {
+		headers["Cookie"] = strings.TrimSpace(creds.BalanceCookie)
+	}
+	if strings.TrimSpace(creds.BalanceUserAgent) != "" {
+		headers["User-Agent"] = strings.TrimSpace(creds.BalanceUserAgent)
+	}
+	return headers
+}
+
+func applyBrowserHeaders(req *http.Request, headers map[string]string) {
+	for key, value := range headers {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		req.Header.Set(key, value)
+	}
 }
 
 func (c *Client) userProfileResult(ctx context.Context, u store.Upstream, secret string, now time.Time, profile map[string]any, balance *float64, latency time.Duration, path string, fallbackMessage string) upstream.FetchResult {
